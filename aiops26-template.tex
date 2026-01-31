@@ -14,11 +14,11 @@
 }
 
 \begin{abstract}
-Large Language Model (LLM)-based agents have emerged as promising solutions for automating software performance optimization and incident diagnosis tasks. Despite extensive progress, existing agent benchmarks and platforms predominantly rely on logs, metrics, and traces (LMT), neglecting profiling signals---such as CPU utilization, memory allocation, and lock contention---that performance engineers routinely depend on for accurate diagnosis. Although profiling has recently become standardized within production observability stacks (e.g., OpenTelemetry's adoption of profiling as a first-class signal)~\cite{otel-profiling}, current agent evaluation benchmarks provide no guidance or standardized interfaces for profiling tool usage under realistic constraints~\cite{swefficiency,sweperf,perfbench}.
+Large Language Model (LLM)-based agents have emerged as promising solutions for automating software performance optimization and incident diagnosis tasks. Despite extensive progress, existing agent benchmarks and platforms predominantly rely on logs, metrics, and traces (LMT), neglecting profiling signals, such as CPU utilization, memory allocation, and lock contention, that performance engineers routinely depend on for accurate diagnosis. Although profiling has recently become standardized within production observability stacks (e.g., OpenTelemetry's adoption of profiling as a first-class signal)~\cite{otel-profiling}, current agent evaluation benchmarks provide no guidance or standardized interfaces for profiling tool usage under realistic constraints~\cite{swefficiency,sweperf,perfbench}.
 
 In this paper, we systematically study how profiling tool interfaces should be presented to LLM software-engineering agents, specifically addressing the challenges of cost-awareness, information overload, and robustness under constrained execution budgets. Using the SWE-fficiency benchmark~\cite{swefficiency}, we conducted controlled experiments evaluating: (1) whether budget-controlled profiling improves agents' capability to localize and repair performance bottlenecks, (2) how various representations of profiling data (top-K summaries, hierarchical call-stacks, differential profiles) affect agents' reasoning effectiveness, and (3) how profiling budget affects the cost-benefit trade-off in diagnostic accuracy.
 
-Our results show that agent performance is highly sensitive to profiling interface design. Providing structured profiling improved the overall speedup ratio from [XX\%] to [YY\%], while naive raw-profiling data degraded accuracy by [ZZ\%] compared to the no-profiling baseline. We identified characteristic failure modes including profiling overuse ([WW\%] of failed cases) and misattribution of causality. Based on these findings, we establish design principles for profiling interfaces that balance information quality, agent cognitive load, and budget constraints.
+Our results show that agent performance is highly sensitive to profiling interface design. Providing structured profiling improved the overall speedup ratio from [XX\%] to [YY\%], while naive raw-profiling data degraded accuracy by [ZZ\%] compared to the no-profiling baseline. We identified characteristic failure modes including profiling overuse in [WW\%] of failed cases and misattribution of causality. Based on these findings, we establish design principles for profiling interfaces that balance information quality, agent cognitive load, and budget constraints.
 \end{abstract}
 
 \begin{document}
@@ -40,7 +40,7 @@ Our work makes three contributions:
 
     \item \textbf{Empirical Evaluation:} We quantified the effects of profiling budget and representation on agent success rates and diagnostic accuracy. Structured profiling improved speedup ratio by [XX\%] over no-profiling baselines, while raw profiling degraded performance by [YY\%].
 
-    \item \textbf{Design Principles:} We identified systematic failure modes (profiling spam in [ZZ\%] of cases, causal misattribution) and derived actionable design principles for profiling interfaces tailored to LLM-based agents.
+    \item \textbf{Design Principles:} We identified systematic failure modes, including profiling spam in [ZZ\%] of cases and causal misattribution, and derived actionable design principles for profiling interfaces tailored to LLM-based agents.
 \end{enumerate}
 
 \section{Background and Related Work}
@@ -53,7 +53,7 @@ Several benchmarks have emerged for evaluating LLM agents on performance optimiz
 
 \textbf{SWE-Perf}~\cite{sweperf} contains 140 repository-level instances derived from real performance-improving pull requests. Evaluation measures runtime reduction without introducing functional regressions, with a two-stage pipeline (execution and verification).
 
-\textbf{PerfBench}~\cite{perfbench} focuses on 81 real-world .NET performance bug-fixing tasks. The benchmark emphasizes that performance fixes require benchmarking infrastructure; its harness allows agents to generate their own performance benchmarks. Baseline agent success rates are notably low ($\sim$3\% for OpenHands), with performance-aware variants reaching $\sim$20\%.
+\textbf{PerfBench}~\cite{perfbench} focuses on 81 real-world .NET performance bug-fixing tasks. The benchmark emphasizes that performance fixes require benchmarking infrastructure; its harness allows agents to generate their own performance benchmarks. Baseline agent success rates are notably low at $\sim$3\% for OpenHands, with performance-aware variants reaching $\sim$20\%.
 
 These benchmarks establish ``performance'' as a first-class evaluation target. However, none standardize \emph{profiling as a tool interface} for agents, particularly under realistic budget constraints.
 
@@ -63,7 +63,7 @@ The AIOps and root cause analysis (RCA) literature has developed its own evaluat
 
 \textbf{RCAEval}~\cite{rcaeval} explicitly defines RCA as analyzing telemetry data comprising ``metrics, logs, and traces,'' reinforcing the LMT convention prevalent in this domain.
 
-\textbf{AIOpsLab}~\cite{aiopslab} provides an observability layer and agent-cloud interface (ACI) with traces (Jaeger), logs (Filebeat/Logstash), and metrics (Prometheus). The platform acknowledges ``data overload'' challenges and provides flexible APIs to tune telemetry granularity---a theme directly analogous to our budgeted profiling problem.
+\textbf{AIOpsLab}~\cite{aiopslab} provides an observability layer and agent-cloud interface (ACI) with traces (Jaeger), logs (Filebeat/Logstash), and metrics (Prometheus). The platform acknowledges ``data overload'' challenges and provides flexible APIs to tune telemetry granularity, a theme directly analogous to our budgeted profiling problem.
 
 \textbf{OpenRCA}~\cite{openrca} similarly frames telemetry modalities around KPI time series, trace graphs, and log text.
 
@@ -73,7 +73,7 @@ Notably, profiling signals are largely absent from these benchmark definitions a
 
 Industry observability stacks are actively elevating profiling to first-class status. OpenTelemetry's profiling announcement explicitly highlights bidirectional links from metrics, traces, and logs to profiles, positioning profiling as delivering a new dimension of understanding with minimal effort~\cite{otel-profiling}. Subsequent updates discuss profiles as a new OTLP signal type with collector pipeline support~\cite{otel-state-profiling}. Production tools demonstrate trace-profile correlation mechanisms using eBPF-based approaches that capture trace IDs and embed flame graphs per span~\cite{polar-signals}.
 
-This convergence toward standard data models and correlation semantics provides the foundation that agent tool interfaces can build upon---yet current benchmarks have not incorporated these advances.
+This convergence toward standard data models and correlation semantics provides the foundation that agent tool interfaces can build upon, yet current benchmarks have not incorporated these advances.
 
 \section{Problem Statement}
 
@@ -90,13 +90,13 @@ The core research question is: \emph{Which profiling information, delivered unde
 We identify three fundamental challenges that motivate our experimental design:
 
 \textbf{Challenge 1: Cost and Resource Constraints.}
-Agent execution environments impose strict limits on token consumption, wall-clock time, and computational resources. Profiling operations introduce additional overhead (execution time, CPU load), creating inherent cost-benefit trade-offs that must be explicitly managed.
+Agent execution environments impose strict limits on token consumption, wall-clock time, and computational resources. Profiling operations introduce additional overhead in execution time and CPU load, creating inherent cost-benefit trade-offs that must be explicitly managed.
 
 \textbf{Challenge 2: Information Overload.}
-Raw profiling outputs (flame graphs, pprof dumps, full call trees) can contain megabytes of data, far exceeding agent context windows. Agents require actionable insights, not exhaustive data. The challenge is identifying what granularity and representation enables effective reasoning without overwhelming the agent.
+Raw profiling outputs such as flame graphs, pprof dumps, and full call trees can contain megabytes of data, far exceeding agent context windows. Agents require actionable insights, not exhaustive data. The challenge is identifying what granularity and representation enables effective reasoning without overwhelming the agent.
 
 \textbf{Challenge 3: Robustness and Reliability.}
-Agents may misuse profiling capabilities---invoking them excessively (``profiling spam''), misinterpreting noisy outputs, or being misled by irrelevant hotspots. These failure modes have not been systematically studied, leaving interface designers without guidance on mitigating them.
+Agents may misuse profiling capabilities by invoking them excessively, misinterpreting noisy outputs, or being misled by irrelevant hotspots. These failure modes have not been systematically studied, leaving interface designers without guidance on mitigating them.
 
 \subsection{Experimental Formulation}
 
@@ -128,15 +128,15 @@ We measured changes in SR, correctness rates, and token consumption.
 
 \textbf{RQ3: What is the profiling budget vs. performance trade-off curve?}
 
-We varied the allowed profiling budget (maximum invocations and time per invocation) while keeping total task budget fixed, to identify diminishing returns thresholds and budget levels where excessive profiling degrades performance.
+We varied the allowed profiling budget in terms of maximum invocations and time per invocation while keeping total task budget fixed, to identify diminishing returns thresholds and budget levels where excessive profiling degrades performance.
 
 \textbf{RQ4: For which bottleneck classes is profiling most valuable?}
 
-We partitioned tasks by bottleneck characteristics (derived from expert patches: algorithmic inefficiency, I/O patterns, memory allocation, lock contention) and measured per-class gains to determine when profiling helps versus when simpler signals suffice.
+We partitioned tasks by bottleneck characteristics derived from expert patches, including algorithmic inefficiency, I/O patterns, memory allocation, and lock contention, and measured per-class gains to determine when profiling helps versus when simpler signals suffice.
 
 \textbf{RQ5: What are the dominant failure modes?}
 
-We quantified systematic failure patterns: profiling overuse, misattribution of causality to irrelevant hotspots, and failure to close the validation loop (profiling before but not after patches).
+We quantified systematic failure patterns: profiling overuse, misattribution of causality to irrelevant hotspots, and failure to validate improvements after patching.
 
 \section{Experimental Setup}
 
@@ -203,7 +203,7 @@ Table~\ref{tab:conditions} summarizes the conditions addressing RQ1--RQ3.
 \toprule
 Condition & Profiling & Output Representation & Budget \\
 \midrule
-C0 & No & --- & 0 \\
+C0 & No & N/A & 0 \\
 C1 & Yes & Baseline summary & Medium \\
 C2 & Yes & Top-K compressed & Medium \\
 C3 & Yes & Hierarchical call-paths & Medium \\
@@ -275,7 +275,7 @@ Figure~\ref{fig:budget} shows the relationship between profiling budget and agen
 
 \subsection{RQ4: Bottleneck Class Analysis}
 
-Profiling was most effective for [BOTTLENECK\_TYPE] bottlenecks, improving speedup ratio by [XX\%]. For algorithmic inefficiencies requiring semantic understanding, profiling provided minimal benefit ([YY\%] improvement).
+Profiling was most effective for [BOTTLENECK\_TYPE] bottlenecks, improving speedup ratio by [XX\%]. For algorithmic inefficiencies requiring semantic understanding, profiling provided minimal benefit with only [YY\%] improvement.
 
 \subsection{RQ5: Failure Mode Analysis}
 
@@ -314,7 +314,7 @@ Our results yield four key findings with implications for profiling interface de
 
 \textbf{Bottleneck class determines profiling value.} Profiling helped most for [TYPE] bottlenecks and least for issues requiring semantic understanding. Future benchmarks could stratify evaluation by bottleneck type to better assess profiling tool effectiveness.
 
-\textbf{Failure modes are systematic.} The three failure modes we identified (overuse, misattribution, missing validation) suggest specific interface improvements: usage limits, relevance filtering, and prompts for post-patch validation.
+\textbf{Failure modes are systematic.} The three failure modes we identified, namely overuse, misattribution, and missing validation, suggest specific interface improvements: usage limits, relevance filtering, and prompts for post-patch validation.
 
 \textbf{Limitations.} Our study focused on Python repositories in SWE-fficiency. Generalization to other languages and domains requires further validation. The specific budget thresholds and representation rankings may vary with different agent architectures.
 
