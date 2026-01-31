@@ -18,7 +18,7 @@ Large Language Model (LLM)-based agents have emerged as promising solutions for 
 
 In this paper, we systematically study how profiling tool interfaces should be presented to LLM software-engineering agents, specifically addressing the challenges of cost-awareness, information overload, and robustness under constrained execution budgets. Using the SWE-fficiency benchmark~\cite{swefficiency}, we conducted controlled experiments evaluating: (1) whether budget-controlled profiling improves agents' capability to localize and repair performance bottlenecks, (2) how various representations of profiling data (top-K summaries, hierarchical call-stacks, differential profiles) affect agents' reasoning effectiveness, and (3) how profiling budget affects the cost-benefit trade-off in diagnostic accuracy.
 
-Our results show that agent performance is highly sensitive to profiling interface design. Providing structured profiling improved the overall speedup ratio from [XX\%] to [YY\%], while naive raw-profiling data degraded accuracy by [ZZ\%] compared to the no-profiling baseline. We identified characteristic failure modes including profiling overuse in [WW\%] of failed cases and misattribution of causality. Based on these findings, we establish design principles for profiling interfaces that balance information quality, agent cognitive load, and budget constraints.
+Our results show that agent performance is highly sensitive to profiling interface design. Providing structured profiling improved the overall speedup ratio from [XX\%] to [YY\%], while naive raw-profiling data degraded accuracy by [ZZ\%] compared to the no-profiling baseline. We identified characteristic failure modes including profiling overuse in [WW\%] of failed cases and misattribution of causality. Based on these findings, we established design principles for profiling interfaces that balance information quality, agent cognitive load, and budget constraints.
 \end{abstract}
 
 \begin{document}
@@ -36,7 +36,7 @@ In this paper, we address these questions through controlled experiments on the 
 Our work makes three contributions:
 
 \begin{enumerate}
-    \item \textbf{Problem Formalization:} We define the problem of budget-controlled agent profiling, characterizing three core challenges: cost and resource constraints, information overload from raw profiling data, and robustness concerns in agent-tool interactions.
+    \item \textbf{Problem Formalization:} We defined the problem of budget-controlled agent profiling, characterizing three core challenges: cost and resource constraints, information overload from raw profiling data, and robustness concerns in agent-tool interactions.
 
     \item \textbf{Empirical Evaluation:} We quantified the effects of profiling budget and representation on agent success rates and diagnostic accuracy. Structured profiling improved speedup ratio by [XX\%] over no-profiling baselines, while raw profiling degraded performance by [YY\%].
 
@@ -67,11 +67,11 @@ The AIOps and root cause analysis (RCA) literature has developed its own evaluat
 
 \textbf{OpenRCA}~\cite{openrca} similarly frames telemetry modalities around KPI time series, trace graphs, and log text.
 
-Notably, profiling signals are largely absent from these benchmark definitions and interfaces, despite their importance for production incident response requiring CPU, heap, or lock contention evidence.
+Notably, profiling signals are largely absent from these benchmark definitions and interfaces, despite being essential for diagnosing CPU, heap, or lock contention issues in production incident response.
 
 \subsection{Profiling as a Standardized Observability Signal}
 
-Industry observability stacks are actively elevating profiling to first-class status. OpenTelemetry's profiling announcement explicitly highlights bidirectional links from metrics, traces, and logs to profiles, positioning profiling as delivering a new dimension of understanding with minimal effort~\cite{otel-profiling}. Subsequent updates discuss profiles as a new OTLP signal type with collector pipeline support~\cite{otel-state-profiling}. Production tools demonstrate trace-profile correlation mechanisms using eBPF-based approaches that capture trace IDs and embed flame graphs per span~\cite{polar-signals}.
+Industry observability stacks are actively elevating profiling to first-class status. OpenTelemetry's profiling announcement highlights bidirectional links from metrics, traces, and logs to profiles, enabling deeper performance understanding with minimal instrumentation effort~\cite{otel-profiling}. Subsequent updates discuss profiles as a new OTLP signal type with collector pipeline support~\cite{otel-state-profiling}. Production tools demonstrate trace-profile correlation mechanisms using eBPF-based approaches that capture trace IDs and embed flame graphs per span~\cite{polar-signals}.
 
 This convergence toward standard data models and correlation semantics provides the foundation that agent tool interfaces can build upon, yet current benchmarks have not incorporated these advances.
 
@@ -87,7 +87,7 @@ The core research question is: \emph{Which profiling information, delivered unde
 
 \subsection{Core Challenges}
 
-We identify three fundamental challenges that motivate our experimental design:
+We identified three fundamental challenges that motivated our experimental design:
 
 \textbf{Challenge 1: Cost and Resource Constraints.}
 Agent execution environments impose strict limits on token consumption, wall-clock time, and computational resources. Profiling operations introduce additional overhead in execution time and CPU load, creating inherent cost-benefit trade-offs that must be explicitly managed.
@@ -100,13 +100,13 @@ Agents may misuse profiling capabilities by invoking them excessively, misinterp
 
 \subsection{Experimental Formulation}
 
-We treat profiling interface design as producing observations under controlled experimental knobs. The core scientific object is the mapping:
+We treated profiling interface design as producing observations under controlled experimental knobs. The core scientific object is the mapping:
 
 \begin{quote}
 (profiling budget, output representation) $\rightarrow$ (speedup quality, correctness, efficiency, failure modes)
 \end{quote}
 
-Rather than proposing a specific API, we study how variations in budget allocation and information presentation affect agent outcomes, providing empirical grounding for future interface standardization.
+Rather than proposing a specific API, we studied how variations in budget allocation and information presentation affect agent outcomes, providing empirical grounding for future interface standardization.
 
 \section{Research Questions}
 
@@ -220,7 +220,7 @@ B3 & Yes & Best from C1--C4 & High \\
 
 \textbf{C1--C4 (Representation variants):} Profiling enabled with identical budgets but different output formats, isolating the effect of representation.
 
-\textbf{B1--B3 (Budget variants):} Using the best-performing representation from C1--C4, we vary profiling budget to characterize the cost-benefit curve.
+\textbf{B1--B3 (Budget variants):} Using the best-performing representation from C1--C4, we varied profiling budget to characterize the cost-benefit curve.
 
 \subsection{Instrumentation}
 
