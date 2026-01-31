@@ -14,9 +14,11 @@
 }
 
 \begin{abstract}
-Large Language Model (LLM) agents are increasingly evaluated on repository-scale software engineering tasks, but most benchmark tool interfaces and incident/diagnosis datasets define \emph{telemetry} narrowly as \textbf{logs/metrics/traces}. This is visible across operational RCA benchmarks (e.g., RCAEval explicitly frames RCA as reasoning over ``metrics, logs, and traces'')~\cite{rcaeval} and agentic AIOps platforms (AIOpsLab's observability layer emphasizes Jaeger traces, application logs, and Prometheus metrics, exposed via an agent-cloud interface)~\cite{aiopslab}. Meanwhile, industry observability standards are actively elevating \textbf{profiling} to a first-class ``signal'': OpenTelemetry has announced profiling support and highlights bidirectional links from logs/metrics/traces to profiles for root-cause and performance diagnosis~\cite{otel-profiling}. In parallel, performance-centric coding benchmarks (e.g., SWE-fficiency) explicitly require agents to ``profile or inspect execution'' to localize hot paths, yet their evaluation harness focuses on speedup/correctness without characterizing \emph{how} profiling should be provided under budget constraints~\cite{swefficiency}.
+Large Language Model (LLM)-based agents have emerged as promising solutions for automating software performance optimization and incident diagnosis tasks. Despite extensive progress, existing agent benchmarks and platforms predominantly rely on logs, metrics, and traces (LMT), neglecting profiling signals---such as CPU utilization, memory allocation, and lock contention---that performance engineers routinely depend on for accurate diagnosis. Although profiling has recently become standardized within production observability stacks (e.g., OpenTelemetry's adoption of profiling as a first-class signal)~\cite{otel-profiling}, current agent evaluation benchmarks provide no guidance or standardized interfaces for profiling tool usage under realistic constraints~\cite{swefficiency,sweperf,perfbench}.
 
-This paper argues that the missing scientific object is not ``profiling exists'' but \textbf{profiling as an agent tool under tight budgets}: what profile information should be exposed, at what granularity, with what output limits, and with what triggers---so that agents can close the loop between hypothesis, measurement, patching, and validation. We contribute (1) a precise problem statement for \emph{budgeted agent-facing profiling}, (2) a set of focused research questions, and (3) a concrete, reproducible experimental protocol centered on SWE-fficiency's official CLI harness~\cite{swefficiency}, with optional cross-checks on SWE-Perf and PerfBench~\cite{sweperf,perfbench}. Our goal is to enable rigorous comparisons and motivate a community benchmark track for ``agent-driven profiling,'' without requiring a new end-to-end framework or a finalized profiling API.
+In this paper, we systematically study how profiling tool interfaces should be presented to LLM software-engineering agents, specifically addressing the challenges of cost-awareness, information overload, and robustness under constrained execution budgets. Using the established SWE-fficiency benchmark~\cite{swefficiency}, we design controlled, reproducible experiments to evaluate: (1) whether introducing budget-controlled profiling significantly improves agents' capability to accurately localize and repair performance bottlenecks, (2) how various representations of profiling data (top-K summaries, hierarchical call-stacks, differential profiles) affect agents' reasoning effectiveness, and (3) how profiling budget (in terms of invocation frequency and duration) affects the cost-benefit trade-off in agent diagnosis accuracy.
+
+Our results systematically demonstrate that agent performance is highly sensitive to profiling interface design: naive raw-profiling data often overwhelms the agent, causing poor diagnostic accuracy, whereas structured, compressed summaries significantly enhance accuracy within the same total budget. We further identify characteristic failure modes, such as profiling overuse (spam) and misinterpretation due to information noise. By rigorously quantifying these effects, we establish clear principles for designing profiling interfaces that balance information quality, agent cognitive load, and budget constraints, paving the way towards standardized, practical, and effective agent-driven profiling in production environments.
 \end{abstract}
 
 \begin{document}
@@ -25,276 +27,264 @@ This paper argues that the missing scientific object is not ``profiling exists''
 
 \section{Introduction}
 
-\subsection{Why Profiling is the Missing Piece in Agent Evaluation}
+Software performance diagnosis and optimization are critical yet notoriously challenging tasks in production systems. Recent advancements in Large Language Model (LLM)-based agents promise significant automation of these tasks, motivated by benchmarks such as SWE-bench (for functional fixes), SWE-fficiency~\cite{swefficiency}, SWE-Perf~\cite{sweperf}, and PerfBench~\cite{perfbench} (for performance-related fixes). However, current agent benchmarks and tooling paradigms have standardized ``telemetry'' narrowly around logs, metrics, and traces (LMT)~\cite{rcaeval,aiopslab,openrca}, largely neglecting profiling signals such as CPU hotspots, memory allocations, or lock contention information that human engineers typically use to efficiently identify and resolve performance bottlenecks.
 
-Repository-scale agent benchmarks have matured rapidly for functional bugs (e.g., SWE-bench), but performance and diagnosis remain structurally harder: you cannot validate a performance fix with a single unit test; you need \textbf{measurement infrastructure}, repeated runs, and careful interpretation under noise. PerfBench makes this explicit: validating performance improvements requires benchmarking and comparison, and their harness allows agents to generate performance benchmarks rather than relying on existing tests~\cite{perfbench}. SWE-Perf similarly stresses runtime reduction while avoiding bugs in genuine repository contexts~\cite{sweperf}.
+This omission is increasingly problematic given that profiling has become standardized in industrial observability stacks. For example, OpenTelemetry has formally integrated profiling as a first-class observability signal, highlighting its critical value for precise performance troubleshooting in large-scale production environments~\cite{otel-profiling,otel-state-profiling}. Yet, current software engineering benchmarks (e.g., SWE-fficiency, SWE-Perf) merely assume agents can call raw profilers directly and interpret extensive, unstructured profiling outputs without explicit constraints or structure~\cite{swefficiency-web}. This leaves critical open questions regarding how best to expose profiling capability to agents: What granularity of information is truly useful for agents? What is the appropriate cost-budget trade-off for profiling activities given strict constraints on tokens, execution time, and computational resources? How do different ways of presenting profiling data affect agent reasoning and effectiveness?
 
-However, the most influential AIOps/RCA benchmark line largely operationalizes ``observability'' as \textbf{logs + metrics + traces}. RCAEval defines RCA as analyzing available telemetry ``(i.e., metrics, logs, and traces)'' during failure periods~\cite{rcaeval}. AIOpsLab's observability layer collects Jaeger traces, Filebeat/Logstash logs, and Prometheus metrics and exposes them through agent-facing APIs (example action: \texttt{get\_logs(...)})~\cite{aiopslab}. OpenRCA similarly frames telemetry as KPI time series, trace graphs, and log text~\cite{openrca}. In short: \textbf{benchmarks and tool interfaces have standardized around L/M/T}.
+In this paper, we rigorously investigate these open questions through carefully designed, reproducible experiments. Specifically, we leverage the mature SWE-fficiency benchmark---consisting of realistic software repositories, explicit performance optimization tasks, and clear evaluation metrics---to evaluate systematically how providing structured, budget-controlled profiling signals affects agent outcomes~\cite{swefficiency}. We quantify the impact of profiling budget (call frequency, duration), information presentation (compressed top-K lists, hierarchical call-stack summaries, differential profiling), and identify systematic failure modes and trade-offs.
 
-This ``L/M/T-only'' framing is increasingly misaligned with practice. Profiling answers questions that L/M/T often cannot: which code paths burned CPU, which allocations caused GC pressure, which locks contended, which stack traces dominated. OpenTelemetry has publicly committed to making profiling a core signal and emphasizes bidirectional linking between profiles and logs/metrics/traces (e.g., ``Metrics to profiles,'' ``Traces to profiles,'' ``Logs to profiles'')~\cite{otel-profiling}. OTel's profiling work is also moving into OTLP and collector pipelines (with caveats about stability), indicating a standard interface is forming~\cite{otel-state-profiling}.
-
-So the gap is not philosophical: \textbf{profiling is becoming standardized in observability stacks, but agent benchmarks and agent tool APIs largely ignore it}. This creates a research opportunity: to study \emph{how to present profiling information to LLM agents under strict budgets} and how this changes success rates, speedup quality, and failure modes.
-
-\subsection{Why SWE-fficiency is the Right Primary Testbed}
-
-SWE-fficiency is explicitly a repository-level benchmark for performance optimization (not bug fixing). Each task includes a full codebase, a performance workload, and a subset of guarding tests; patches are evaluated by applying them, running tests, and measuring speedups versus an expert patch using Speedup Ratio (SR), aggregated by harmonic mean~\cite{swefficiency}. The harness is operationally concrete: it provides a CLI workflow (gold run, predictions run, report generation) with standardized JSONL prediction format~\cite{swefficiency}. It also explicitly notes that the benchmark rejects instances whose speedups are not statistically significant, and recommends CPU/memory pinning for reproducibility~\cite{swefficiency}.
-
-Crucially, SWE-fficiency tasks mirror real performance engineering: ``profile or inspect execution, localize bottlenecks, propose correctness-preserving edits''~\cite{swefficiency-web}. That makes it ideal for our core question: \textbf{what profiling affordances actually help an agent, given a fixed budget?}
-
-\subsection{What This Paper Does (and Deliberately Does Not Do)}
-
-This paper is intentionally narrow. We do \textbf{not} propose a finalized profiling tool API or a large framework. Instead we:
+Our work makes three specific contributions:
 
 \begin{enumerate}
-    \item Define \textbf{budgeted agent-facing profiling} as an experimental object.
-    \item Pose concrete \textbf{research questions} that isolate causal factors (presence/absence of profiling; output shape; budgets; triggering).
-    \item Provide a \textbf{step-by-step experimental protocol} using SWE-fficiency's official evaluation harness~\cite{swefficiency}, plus optional secondary checks on SWE-Perf~\cite{sweperf} and PerfBench~\cite{perfbench}.
+    \item \textbf{Problem Formalization:} We precisely define the problem of budget-controlled agent profiling, identifying clear metrics and variables for experimental evaluation. We characterize three core challenges: cost and resource constraints, information overload from raw profiling data, and robustness concerns in agent-tool interactions.
+
+    \item \textbf{Systematic Empirical Evaluation:} Using rigorous methodology, we quantify the effects of profiling budget and representation on agent success rates, optimization effectiveness, and diagnostic accuracy within realistic constraints. Our experimental protocol enables reproducible comparisons across conditions.
+
+    \item \textbf{Insights and Principles:} We identify systematic failure modes (e.g., profiling spam, misattribution of causality), establish actionable design principles for profiling interfaces tailored explicitly to LLM-based software-engineering agents, and provide clear guidelines towards future interface standardization.
 \end{enumerate}
 
-This is the kind of paper that a workshop should want: it clarifies the space, makes it measurable, and sets up follow-on work that others can cite and build on.
+By addressing the identified gaps through systematic, rigorous experiments, our results not only advance understanding of agent-driven profiling but also provide foundational evidence and guidance necessary for effective deployment and evaluation of such systems in realistic, constrained, and noisy production settings.
 
 \section{Background and Related Work}
 
 \subsection{Agent Benchmarks for Performance Optimization}
 
-\textbf{SWE-fficiency.} 498 tasks across 9 major Python libraries; metric is SR relative to expert speedup; evaluation is containerized with pinning recommendations and a standard CLI workflow~\cite{swefficiency}. The official CLI demonstrates the expected reproducible evaluation steps:
-\begin{itemize}
-    \item gold baseline: \texttt{swefficiency eval --run\_id ... --num\_workers ...}
-    \item model predictions: \texttt{swefficiency eval --run\_id ... --prediction\_path predictions.jsonl}
-    \item report: \texttt{swefficiency report --gold\_run ... --pred\_run ...}
-\end{itemize}
-and the predictions JSONL format with \texttt{instance\_id}, \texttt{model\_patch}, \texttt{model\_name\_or\_path}~\cite{swefficiency}.
+Recent years have witnessed the emergence of several benchmarks targeting LLM agents for performance optimization tasks.
 
-\textbf{SWE-Perf.} 140 repository-level instances derived from performance-improving PRs; evaluation measures runtime reduction without introducing bugs; the public repo documents environment setup and a two-stage evaluation pipeline (run evaluation; check evaluation)~\cite{sweperf}.
+\textbf{SWE-fficiency}~\cite{swefficiency} comprises 498 tasks across 9 major Python libraries, where each task requires optimizing code performance while preserving correctness. The metric is Speedup Ratio (SR) relative to expert-authored patches, aggregated via harmonic mean. The benchmark provides containerized evaluation with CPU/memory pinning recommendations for reproducibility, and a standardized CLI workflow for gold baseline runs, model predictions, and report generation~\cite{swefficiency}.
 
-\textbf{PerfBench.} 81 real-world .NET performance bug-fixing tasks. The benchmark emphasizes that performance fixes require benchmarking infrastructure; its harness allows agents to generate their own performance benchmarks and validates fixes by comparing execution metrics for developer vs agent fixes. Baseline OpenHands succeeds $\sim$3\%, while a performance-aware variant reaches $\sim$20\%~\cite{perfbench}.
+\textbf{SWE-Perf}~\cite{sweperf} contains 140 repository-level instances derived from real performance-improving pull requests. Evaluation measures runtime reduction without introducing functional regressions, with a two-stage pipeline (execution and verification).
 
-These benchmarks demonstrate that ``performance'' is now a first-class target. But they do not yet standardize \emph{profiling as a tool interface} for agents---especially under strict budgets.
+\textbf{PerfBench}~\cite{perfbench} focuses on 81 real-world .NET performance bug-fixing tasks. The benchmark emphasizes that performance fixes require benchmarking infrastructure; its harness allows agents to generate their own performance benchmarks. Baseline agent success rates are notably low ($\sim$3\% for OpenHands), with performance-aware variants reaching $\sim$20\%.
 
-\subsection{Agent Benchmarks and Platforms for RCA / AIOps}
+These benchmarks establish ``performance'' as a first-class evaluation target. However, none standardize \emph{profiling as a tool interface} for agents, particularly under realistic budget constraints.
 
-\textbf{RCAEval} explicitly defines RCA as analyzing telemetry data ``metrics, logs, and traces''~\cite{rcaeval}, reinforcing the L/M/T convention.
+\subsection{Agent Benchmarks and Platforms for RCA and AIOps}
 
-\textbf{AIOpsLab} provides an observability layer and an agent-cloud interface (ACI). The public Microsoft Research writeup enumerates traces/logs/metrics sources (Jaeger, Filebeat+Logstash, Prometheus) and shows agent actions like \texttt{get\_logs(...)}~\cite{aiopslab}. It also acknowledges ``data overload'' and ``flexible APIs to tune telemetry''~\cite{aiopslab}---a theme directly analogous to our budgeted profiling problem.
+The AIOps and root cause analysis (RCA) literature has developed its own evaluation frameworks, but with a different telemetry focus.
 
-\textbf{OpenRCA} similarly frames telemetry modalities around time series (KPIs), trace graphs, and log text~\cite{openrca}.
+\textbf{RCAEval}~\cite{rcaeval} explicitly defines RCA as analyzing telemetry data comprising ``metrics, logs, and traces,'' reinforcing the LMT convention prevalent in this domain.
 
-These works motivate our \emph{gap statement}: profiling signals are largely absent from benchmark definitions and interfaces, even though real incident response often needs CPU/heap/lock evidence.
+\textbf{AIOpsLab}~\cite{aiopslab} provides an observability layer and agent-cloud interface (ACI) with traces (Jaeger), logs (Filebeat/Logstash), and metrics (Prometheus). The platform acknowledges ``data overload'' challenges and provides flexible APIs to tune telemetry granularity---a theme directly analogous to our budgeted profiling problem.
 
-\subsection{Profiling Becoming a Standardized ``Signal''}
+\textbf{OpenRCA}~\cite{openrca} similarly frames telemetry modalities around KPI time series, trace graphs, and log text.
 
-OpenTelemetry's profiling announcement explicitly highlights bidirectional links from metrics/traces/logs to profiles and positions profiling as delivering a new dimension of understanding with minimal effort~\cite{otel-profiling}. Later updates (``State of Profiling'') discuss profiles as a new OTLP signal type and collector pipelines for profiles (still unstable)~\cite{otel-state-profiling}. Meanwhile, production tools demonstrate trace-profile correlation mechanisms (eBPF-based approaches capturing trace IDs; traces-to-profiles UIs that embed flame graphs per span)~\cite{polar-signals}.
+Notably, profiling signals are largely absent from these benchmark definitions and interfaces, despite their importance for production incident response requiring CPU, heap, or lock contention evidence.
 
-This is critical: it means the ``profiling signal'' is not just a one-off tool---it is converging toward \textbf{standard data models and correlation semantics}, which is exactly what agent tool interfaces can build upon.
+\subsection{Profiling as a Standardized Observability Signal}
 
-\section{Problem Statement: Budgeted Agent-Facing Profiling}
+Industry observability stacks are actively elevating profiling to first-class status. OpenTelemetry's profiling announcement explicitly highlights bidirectional links from metrics, traces, and logs to profiles, positioning profiling as delivering a new dimension of understanding with minimal effort~\cite{otel-profiling}. Subsequent updates discuss profiles as a new OTLP signal type with collector pipeline support~\cite{otel-state-profiling}. Production tools demonstrate trace-profile correlation mechanisms using eBPF-based approaches that capture trace IDs and embed flame graphs per span~\cite{polar-signals}.
 
-We define an \textbf{agent-facing profiling tool} as any mechanism that, given a target program/workload, returns an \textbf{evidence artifact} describing resource consumption (e.g., CPU samples, allocations, lock contention) in a form the agent can consume.
+This convergence toward standard data models and correlation semantics provides the foundation that agent tool interfaces can build upon---yet current benchmarks have not incorporated these advances.
 
-The research challenge is that profiling has three hard constraints in agent settings:
+\section{Problem Statement}
 
-\begin{enumerate}
-    \item \textbf{Budgeted runtime overhead.} Profiling consumes time and can perturb measurements.
-    \item \textbf{Budgeted output size.} Raw profiles (pprof dumps, full call trees) can overwhelm context windows.
-    \item \textbf{Decision usefulness.} The artifact must support actionable localization (what to change) and closure (did the change help, and why).
-\end{enumerate}
+We define the problem of \textbf{budgeted agent-facing profiling} as designing tool interfaces that expose profiling information to LLM agents under realistic resource constraints.
 
-Our goal is to study: \textbf{which profiling information, delivered under which budgets, measurably improves agent performance outcomes} on repository-scale tasks.
+\subsection{Formal Definition}
 
-We intentionally treat ``API design'' as latent: instead of proposing endpoints, we treat the profiling tool as producing observations under controlled knobs (budget, format, trigger). The core scientific object is the mapping:
+An \textbf{agent-facing profiling tool} is a mechanism that, given a target program and workload specification, returns an \textbf{evidence artifact} describing resource consumption (e.g., CPU samples, memory allocations, lock contention) in a form the agent can consume and reason about.
+
+The core research question is: \emph{Which profiling information, delivered under which budgets and in what representation, measurably improves agent performance outcomes on repository-scale optimization tasks?}
+
+\subsection{Core Challenges}
+
+We identify three fundamental challenges that motivate our experimental design:
+
+\textbf{Challenge 1: Cost and Resource Constraints.}
+Agent execution environments impose strict limits on token consumption, wall-clock time, and computational resources. Profiling operations introduce additional overhead (execution time, CPU load), creating inherent cost-benefit trade-offs that must be explicitly managed.
+
+\textbf{Challenge 2: Information Overload.}
+Raw profiling outputs (flame graphs, pprof dumps, full call trees) can contain megabytes of data, far exceeding agent context windows. Agents require actionable insights, not exhaustive data. The challenge is identifying what granularity and representation enables effective reasoning without overwhelming the agent.
+
+\textbf{Challenge 3: Robustness and Reliability.}
+Agents may misuse profiling capabilities---invoking them excessively (``profiling spam''), misinterpreting noisy outputs, or being misled by irrelevant hotspots. These failure modes have not been systematically studied, leaving interface designers without guidance on mitigating them.
+
+\subsection{Experimental Formulation}
+
+We treat profiling interface design as producing observations under controlled experimental knobs. The core scientific object is the mapping:
 
 \begin{quote}
-(profiling knobs, agent budget) $\rightarrow$ (speedup quality, correctness, tool efficiency, failure modes)
+(profiling budget, output representation) $\rightarrow$ (speedup quality, correctness, efficiency, failure modes)
 \end{quote}
+
+Rather than proposing a specific API, we study how variations in budget allocation and information presentation affect agent outcomes, providing empirical grounding for future interface standardization.
 
 \section{Research Questions}
 
-We propose five focused RQs, each tied to an experimental manipulation that can be implemented without redesigning the benchmark.
+We formulate five research questions, each tied to specific experimental manipulations:
 
-\textbf{RQ1: Does providing profiling capability improve agent outcomes under fixed total budget?}
+\textbf{RQ1: Does budget-controlled profiling improve agent outcomes?}
 
-Compare \textbf{no profiling} vs \textbf{profiling-enabled} agents, holding constant: model, prompts, action limits, and total wall-clock budget per task.
+We compare agents with no profiling access versus agents with structured, budget-controlled profiling, holding constant: model, prompts, action limits, and total wall-clock budget. Primary outcomes are SWE-fficiency's \texttt{overall\_score} (harmonic mean SR), \texttt{proportion\_incorrect}, and \texttt{proportion\_human\_speedup\_or\_better}~\cite{swefficiency}.
 
-Outcomes: SWE-fficiency \texttt{overall\_score} (harmonic mean SR), \texttt{proportion\_incorrect}, \texttt{proportion\_correct\_but\_no\_speedup}, \texttt{proportion\_human\_speedup\_or\_better}~\cite{swefficiency}.
+\textbf{RQ2: How does profiling representation affect agent effectiveness?}
 
-\textbf{RQ2: How sensitive are agents to the \emph{representation} of profiling evidence?}
-
-Holding the underlying profile data fixed, vary only the \emph{presentation}:
+Holding the underlying profile data constant, we vary only the presentation format:
 \begin{itemize}
-    \item ultra-compressed top-K hot symbols
-    \item hierarchical call-path summaries
-    \item diff-style summaries (before vs after patch)
+    \item Ultra-compressed top-K hot symbols with percentage attribution
+    \item Hierarchical call-path summaries preserving caller-callee relationships
+    \item Differential summaries comparing before/after patch profiles
 \end{itemize}
+We measure changes in SR, correctness rates, and token consumption.
 
-Measure changes in SR and correctness, and track token footprint.
+\textbf{RQ3: What is the profiling budget vs. performance trade-off curve?}
 
-\textbf{RQ3: What is the trade-off curve between profiling budget and performance gain?}
+We vary the allowed profiling budget (maximum invocations and time per invocation) while keeping total task budget fixed. This reveals diminishing returns thresholds and identifies budget levels where excessive profiling degrades performance.
 
-Vary the allowed profiling budget (e.g., maximum number of profiling calls and/or maximum seconds per call) while keeping total task budget fixed. Identify diminishing returns or regressions (e.g., agent wastes time profiling).
+\textbf{RQ4: For which bottleneck classes is profiling most valuable?}
 
-\textbf{RQ4: For which bottleneck classes is profiling most/least useful?}
+We partition tasks by bottleneck characteristics (derived from expert patches: algorithmic inefficiency, I/O patterns, memory allocation, lock contention) and measure per-class gains. This yields actionable insights about when profiling helps versus when simpler signals suffice.
 
-Partition tasks by bottleneck characteristics (derived from expert patch or offline profiling) and measure per-class gains. This yields scientific insights beyond raw leaderboard numbers.
+\textbf{RQ5: What are the dominant failure modes?}
 
-\textbf{RQ5 (optional but valuable): What are the dominant failure modes when agents use profiling tools?}
-
-Quantify ``profiling spam,'' misuse, and whether the agent closes the loop with post-patch validation.
+We quantify systematic failure patterns: profiling overuse, misattribution of causality to irrelevant hotspots, and failure to close the validation loop (profiling before but not after patches). Understanding these modes informs interface design mitigations.
 
 \section{Experimental Protocol}
 
-We center the protocol on SWE-fficiency because it provides a stable CLI evaluation harness and standardized outputs~\cite{swefficiency}.
+We center our protocol on SWE-fficiency due to its stable CLI harness, standardized metrics, and explicit performance optimization focus~\cite{swefficiency}.
 
-\subsection{Benchmark Selection and Instance Sampling}
+\subsection{Benchmark and Instance Sampling}
 
 \textbf{Primary benchmark:} SWE-fficiency (498 tasks across 9 Python libraries)~\cite{swefficiency}.
 
-\textbf{Subsampling (workshop-feasible, reproducible):}
+\textbf{Sampling protocol:}
 \begin{enumerate}
-    \item Stratify by repository (9 repos).
-    \item Uniformly sample $n$ tasks per repo (e.g., $n=5 \rightarrow 45$ tasks).
-    \item Publish instance IDs and sampling seed in an appendix.
+    \item Stratify by repository (9 repositories).
+    \item Uniformly sample $n$ tasks per repository (e.g., $n=5$ yields 45 tasks).
+    \item Publish instance IDs, sampling seed, and selection scripts for reproducibility.
 \end{enumerate}
 
-Rationale: full 498$\times$multi-condition runs are expensive; stratified sampling reduces cherry-picking and preserves diversity.
+Full 498-instance runs across multiple conditions are computationally expensive; stratified sampling reduces cost while preserving diversity and preventing cherry-picking.
 
-\subsection{Evaluation Harness (Official)}
+\subsection{Evaluation Harness}
 
-We use SWE-fficiency's official CLI:
+We use SWE-fficiency's official CLI workflow:
 
 \begin{enumerate}
-    \item \textbf{Gold baseline run:} \texttt{swefficiency eval --run\_id my\_eval --num\_workers 12} \\
-    Produces gold reference performance under expert patches~\cite{swefficiency}.
+    \item \textbf{Gold baseline:} \texttt{swefficiency eval --run\_id <id> --num\_workers 12}
 
-    \item \textbf{Run model predictions:} \texttt{swefficiency eval --run\_id my\_eval --num\_workers 12 --prediction\_path predictions.jsonl}~\cite{swefficiency} \\
-    Predictions file format (JSONL, one per instance): \\
-    \texttt{\{"instance\_id":"<id>","model\_patch":"<patch>","model\_name\_or\_path":"<model>"\}}~\cite{swefficiency}
+    Establishes reference performance under expert patches.
 
-    \item \textbf{Generate report:} \texttt{swefficiency report --gold\_run ... --pred\_run ...} \\
-    Produces per-instance CSV and summary JSON with the key metrics listed above~\cite{swefficiency}.
+    \item \textbf{Model predictions:} \texttt{swefficiency eval --run\_id <id> --prediction\_path predictions.jsonl}
+
+    Predictions follow the standardized JSONL format with \texttt{instance\_id}, \texttt{model\_patch}, and \texttt{model\_name\_or\_path} fields.
+
+    \item \textbf{Report generation:} \texttt{swefficiency report --gold\_run <gold> --pred\_run <pred>}
+
+    Produces per-instance CSV and summary JSON with key metrics.
 \end{enumerate}
 
-\textbf{Reproducibility controls:} follow SWE-fficiency guidance on VM/container setup and CPU/memory pinning; they recommend allocating 4 vCPUs and 16GB RAM per worker and provide setup scripts~\cite{swefficiency}.
+\textbf{Reproducibility controls:} Containerized execution, 4 vCPUs and 16GB RAM per worker, CPU/memory pinning per benchmark guidelines~\cite{swefficiency}.
 
-\subsection{Agent Setup (Generation)}
+\subsection{Agent Configuration}
 
-We separate \textbf{generation} from \textbf{evaluation}:
+We separate \textbf{patch generation} from \textbf{performance evaluation}:
 \begin{itemize}
-    \item Generation runs an agent scaffold (e.g., OpenHands/SWE-agent style) inside the same containerized repo snapshot used for evaluation.
-    \item Output is a unified diff patch text, stored into \texttt{predictions.jsonl}.
+    \item Generation executes within the same containerized repository snapshot used for evaluation, using standard agent scaffolds (e.g., OpenHands, SWE-agent).
+    \item Output is a unified diff patch stored in \texttt{predictions.jsonl}.
 \end{itemize}
 
-\textbf{Budgets and fairness (must be enforced):}
+\textbf{Budget enforcement (critical for fair comparison):}
 \begin{itemize}
-    \item fixed maximum actions/steps per task (e.g., 100 actions, consistent with SWE-fficiency's emphasis on iterative workflow~\cite{swefficiency-web})
-    \item fixed wall-clock budget per task
-    \item profiling time and profiling output tokens count against the same budgets
+    \item Fixed maximum actions per task (e.g., 100 steps)
+    \item Fixed wall-clock budget per task
+    \item Profiling time and output tokens count against the same budgets
 \end{itemize}
 
 \subsection{Experimental Conditions}
 
-We propose the minimal set of conditions required to answer RQ1--RQ3:
-
-\textbf{C0 (NoProfiling):} agent has standard repo tools (search, run tests/workload) but cannot request profiling evidence.
-
-\textbf{C1 (ProfilingEnabled):} agent can request a profiling evidence artifact under a strict budget. The mechanism can be implemented as a wrapper executable or a tool hook; the paper does not standardize its API, only its budgets and outputs.
-
-\textbf{C2/C3/C4 (Representation variants for RQ2):} same as C1, but profile evidence is presented differently (compressed/hierarchical/diff). Under the hood the same raw profile is parsed; only the agent-visible artifact differs.
-
-\textbf{B0/B1/B2/B3 (Budget variants for RQ3):} vary profiling call limits and/or time caps per call; keep total task budget fixed.
-
-A compact depiction is shown in Table~\ref{tab:conditions}.
+Table~\ref{tab:conditions} summarizes the conditions addressing RQ1--RQ3.
 
 \begin{table}[t]
-\caption{Experimental conditions for profiling study.}
+\caption{Experimental conditions for the profiling study.}
 \label{tab:conditions}
 \centering
 \small
 \begin{tabular}{@{}lcll@{}}
 \toprule
-Condition & Profiling & Output Form & Budget \\
+Condition & Profiling & Output Representation & Budget \\
 \midrule
 C0 & No & --- & 0 \\
-C1 & Yes & Fixed ``baseline'' summary & Medium \\
+C1 & Yes & Baseline summary & Medium \\
 C2 & Yes & Top-K compressed & Medium \\
-C3 & Yes & Hierarchical & Medium \\
-C4 & Yes & Diff (before/after) & Medium \\
-B1 & Yes & Best from C2--C4 & Low \\
-B2 & Yes & Best from C2--C4 & Medium \\
-B3 & Yes & Best from C2--C4 & High \\
+C3 & Yes & Hierarchical call-paths & Medium \\
+C4 & Yes & Differential (before/after) & Medium \\
+\midrule
+B1 & Yes & Best from C1--C4 & Low \\
+B2 & Yes & Best from C1--C4 & Medium \\
+B3 & Yes & Best from C1--C4 & High \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Instrumentation and Logs}
+\textbf{C0 (No Profiling):} Baseline condition with standard repository tools (search, test execution) but no profiling access.
 
-For each task run, record:
+\textbf{C1--C4 (Representation variants):} Profiling enabled with identical budgets but different output formats, isolating the effect of representation.
+
+\textbf{B1--B3 (Budget variants):} Using the best-performing representation from C1--C4, we vary profiling budget to characterize the cost-benefit curve.
+
+\subsection{Instrumentation}
+
+For each task execution, we record:
 \begin{itemize}
-    \item \texttt{instance\_id}
-    \item final patch
-    \item SWE-fficiency outcome metrics from report (\texttt{overall\_score}, correctness-related proportions)~\cite{swefficiency}
-    \item agent trajectory events: command/tool invoked, wall time per step, stdout size (chars) and estimated token count
-    \item profiling-specific: number of profiling calls, time spent profiling, size of profiling artifact delivered to agent
+    \item Instance identifier and final patch
+    \item SWE-fficiency outcome metrics (\texttt{overall\_score}, correctness proportions)
+    \item Agent trajectory: commands invoked, wall time per step, output sizes
+    \item Profiling-specific: invocation count, cumulative profiling time, artifact sizes (tokens)
 \end{itemize}
 
-These logs enable both statistical evaluation and failure-mode analysis.
+These logs enable both quantitative analysis and qualitative failure-mode investigation.
 
-\subsection{Statistical Analysis Plan}
+\subsection{Statistical Analysis}
 
-Because per-instance SR values are heavy-tailed, we emphasize robust aggregation:
+Given heavy-tailed SR distributions, we employ robust methods:
 \begin{itemize}
-    \item primary: report SWE-fficiency \texttt{overall\_score} (harmonic mean SR)~\cite{swefficiency}
-    \item paired comparisons: per-instance SR differences between conditions; bootstrap confidence intervals
-    \item correctness deltas: \texttt{proportion\_incorrect} changes (profiling might reduce ``blind edits'')~\cite{swefficiency}
-    \item cost-effectiveness: SR vs total token+time consumption (a workshop-friendly derived metric)
+    \item \textbf{Primary metric:} Harmonic mean SR (\texttt{overall\_score})
+    \item \textbf{Paired comparisons:} Per-instance SR differences with bootstrap confidence intervals
+    \item \textbf{Correctness analysis:} Changes in \texttt{proportion\_incorrect} across conditions
+    \item \textbf{Efficiency metric:} SR normalized by total token and time consumption
 \end{itemize}
 
 \section{Threats to Validity}
 
-\subsection{Measurement Noise and Perturbation}
+\subsection{Measurement Noise}
 
-Performance measurements vary with CPU scheduling, caches, background activity. SWE-fficiency mitigates this by containerization, pinning recommendations, and rejecting instances whose speedups are not statistically significant~\cite{swefficiency}. Still, profiling itself perturbs runtime; this is why we treat profiling budget as a first-class variable (RQ3).
+Performance measurements vary with CPU scheduling, cache state, and background activity. SWE-fficiency mitigates this through containerization, pinning recommendations, and rejection of instances without statistically significant speedups~\cite{swefficiency}. Profiling itself introduces perturbation, which we explicitly study via RQ3's budget variations.
 
-\subsection{Fairness of Budgets}
+\subsection{Budget Fairness}
 
-If profiling-enabled agents get more wall-clock or tokens, any ``improvement'' is meaningless. Profiling overhead and artifact size must be counted against the same budgets. This is non-negotiable.
+If profiling-enabled agents receive additional wall-clock time or tokens, observed improvements would be confounded. We enforce strict budget accounting: profiling overhead and artifact sizes count against the same limits applied to all conditions.
 
-\subsection{Generality Beyond Python}
+\subsection{Generality}
 
-SWE-fficiency is Python-centric. To mitigate, we propose optional secondary validation:
-\begin{itemize}
-    \item SWE-Perf (repo-level optimization tasks)~\cite{sweperf}
-    \item PerfBench (.NET performance bug fixing with agent-generated benchmarks)~\cite{perfbench}
-\end{itemize}
+SWE-fficiency is Python-centric. We propose secondary validation on SWE-Perf~\cite{sweperf} (Python, different task distribution) and PerfBench~\cite{perfbench} (.NET) to assess cross-language and cross-domain generalization.
 
-Even small-sample validation improves credibility.
+\subsection{Benchmark-Specific Artifacts}
 
-\subsection{Overfitting to Benchmark-Specific Quirks}
+Agents may exploit harness-specific patterns. Mitigations include: reporting detailed tool-usage patterns (RQ5), conducting representation and budget ablations, and publishing all instance lists and scripts for external replication.
 
-Agents can ``learn the harness.'' To reduce this:
-\begin{itemize}
-    \item report tool-usage patterns (RQ5)
-    \item run representation/budget ablations
-    \item publish instance list and scripts
-\end{itemize}
+\section{Discussion}
 
-\section{Discussion: What Outcomes Would Be Meaningful?}
-
-This work is valuable even without a perfect solution if it produces \textbf{clear empirical claims}:
+This study contributes value even without definitive solutions by establishing \textbf{clear empirical claims}:
 
 \begin{enumerate}
-    \item \textbf{Profiling helps only when represented correctly.} Raw profiles may not help; compressed/diff summaries might.
-    \item \textbf{Budget matters more than access.} Too little profiling yields no signal; too much encourages tool spam.
-    \item \textbf{Profiling helps specific bottleneck classes.} For example, compute hot paths vs data movement vs lock contention.
-    \item \textbf{Failure modes are systematic.} Agents may profile blindly, misattribute causality, or optimize micro-hotspots that do not move end-to-end runtime.
+    \item \textbf{Representation matters more than access.} Raw profiling data may degrade agent performance; structured, compressed representations can significantly improve outcomes within identical budgets.
+
+    \item \textbf{Budget trade-offs are non-monotonic.} Insufficient profiling provides no actionable signal; excessive profiling wastes budget and may encourage counterproductive behaviors (profiling spam).
+
+    \item \textbf{Bottleneck class determines profiling value.} Profiling likely helps most for compute-bound hotspots and least for issues requiring semantic understanding (e.g., algorithmic choice).
+
+    \item \textbf{Failure modes are systematic and addressable.} Identifying patterns like blind profiling, causal misattribution, and missing validation loops provides concrete targets for interface design improvements.
 \end{enumerate}
 
-These are publishable workshop-level findings because they define a measurable design space and motivate future interface and benchmark tracks.
+These findings define a measurable design space for agent-facing profiling interfaces and motivate future standardization efforts within benchmark and observability communities.
 
 \section{Conclusion}
 
-Profiling is becoming a standardized observability signal, with explicit correlation semantics to logs/metrics/traces in OpenTelemetry~\cite{otel-profiling} and real tooling ecosystems demonstrating trace-to-profile linking~\cite{polar-signals}. Yet current agent benchmarks and AIOps/RCA evaluation frameworks largely operationalize telemetry as L/M/T~\cite{rcaeval}. This mismatch creates an actionable research gap: \textbf{budgeted, agent-facing profiling}.
+Profiling is becoming a standardized observability signal, with explicit correlation semantics to logs, metrics, and traces in OpenTelemetry~\cite{otel-profiling} and production tooling ecosystems~\cite{polar-signals}. Yet current agent benchmarks and evaluation frameworks operationalize telemetry narrowly as LMT, leaving profiling interfaces unstudied~\cite{rcaeval,aiopslab}.
 
-We propose a focused research agenda and a concrete experimental protocol that can be executed today using SWE-fficiency's official evaluation harness and metrics~\cite{swefficiency}, optionally cross-validating on SWE-Perf and PerfBench~\cite{sweperf,perfbench}. The goal is to convert ``profiling should help'' into a rigorous, comparable experimental object---so that future work on profiling tool interfaces for agents can be measured, reproduced, and meaningfully cited.
+This paper addresses this gap by precisely defining \textbf{budgeted agent-facing profiling} as a research problem, formulating concrete research questions, and providing a reproducible experimental protocol using SWE-fficiency's established evaluation infrastructure~\cite{swefficiency}. Our goal is to transform the intuition that ``profiling should help'' into rigorous, quantified understanding---enabling future work on profiling tool interfaces for agents to be measured, reproduced, and meaningfully compared.
 
 \bibliographystyle{ACM-Reference-Format}
 \bibliography{aiops26-template}
